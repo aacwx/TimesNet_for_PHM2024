@@ -6,6 +6,8 @@ import re
 import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
+
 from utils.timefeatures import time_features
 from data_provider.m4 import M4Dataset, M4Meta
 from data_provider.uea import subsample, interpolate_missing, Normalizer
@@ -746,3 +748,135 @@ class UEAloader(Dataset):
 
     def __len__(self):
         return len(self.all_IDs)
+
+
+
+class Dataset_PHM(Dataset):
+    def __init__(self, root_dir, seq_len=1024, stride=256, verbose=True, cache_dir='./cache'):
+        super().__init__()
+        self.root_dir = root_dir
+        self.seq_len = seq_len
+        self.stride = stride
+        self.verbose = verbose
+        self.enc_in = 21
+        self.max_seq_len = seq_len  # for use in TimesNet
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.cache_path = os.path.join(self.cache_dir, f"phm_cache_seq{seq_len}_stride{stride}.pt")
+
+        # ========== 尝试加载缓存 ==========
+        if os.path.exists(self.cache_path):
+            self._log(f"🚀 正在从缓存加载预处理数据: {self.cache_path}")
+            cache_data = torch.load(self.cache_path)
+            self.samples = cache_data["samples"]
+            self.labels = cache_data["labels"]
+            self.names = cache_data["names"]
+            self.class_names = cache_data["class_names"]
+        else:
+            # ========== 正常处理流程并缓存 ==========
+            self.samples = []
+            self.labels = {}
+            self.names = []
+            self._index_dataset()
+
+            torch.save({
+                "samples": self.samples,
+                "labels": self.labels,
+                "names": self.names,
+                "class_names": self.class_names,
+            }, self.cache_path)
+            self._log(f"💾 数据已缓存至: {self.cache_path}")
+
+    def _log(self, message):
+        if self.verbose:
+            print(message)
+
+    def _parse_label_from_dirname(self, dirname):
+        label = [0] * 20  # M:5, G:9, LA:4, RA:2
+        components = dirname.split("_")
+        for comp in components:
+            sub_comps = comp.split("+")
+            for sub in sub_comps:
+                if sub.startswith("M"):
+                    idx = int(sub[1:])
+                    label[idx] = 1
+                elif sub.startswith("G"):
+                    idx = int(sub[1:])
+                    label[5 + idx] = 1
+                elif sub.startswith("LA"):
+                    match = re.match(r"LA(\d+)", sub)
+                    if match:
+                        idx = int(match.group(1))
+                        label[5 + 9 + idx] = 1
+                elif sub.startswith("RA"):
+                    match = re.match(r"RA(\d+)", sub)
+                    if match:
+                        idx = int(match.group(1))
+                        label[5 + 9 + 4 + idx] = 1
+                else:
+                    raise ValueError(f"Invalid component in folder name: {sub}")
+        self.class_names = [str(i) for i in sorted(set(label))]
+        return label
+
+    def _load_full_data(self, sample_path):
+        data_list = []
+        for file_name in ['data_motor.csv', 'data_gearbox.csv',
+                          'data_leftaxlebox.csv', 'data_rightaxlebox.csv']:
+            file_path = os.path.join(sample_path, file_name)
+            df = pd.read_csv(file_path)
+            data_list.append(df.values)
+        return np.concatenate(data_list, axis=1)  # shape: [T, 21]
+
+    def _index_dataset(self):
+        total_windows = 0
+        self._log(f"📦 开始索引数据集目录：{self.root_dir}")
+        for folder_idx, folder in enumerate(os.listdir(self.root_dir)):
+            folder_path = os.path.join(self.root_dir, folder)
+            if not os.path.isdir(folder_path):
+                continue
+
+            label = self._parse_label_from_dirname(folder)
+            self.labels[folder] = label
+            folder_window_count = 0
+
+            for sample_folder in os.listdir(folder_path):
+                sample_path = os.path.join(folder_path, sample_folder)
+                if not os.path.isdir(sample_path):
+                    continue
+
+                try:
+                    full_data = self._load_full_data(sample_path)
+                except Exception as e:
+                    self._log(f"⚠️ 加载失败: {sample_path}，原因: {e}")
+                    continue
+
+                total_len = full_data.shape[0]
+                for start in range(0, total_len - self.seq_len + 1, self.stride):
+                    self.samples.append((sample_path, start))
+                    self.names.append(f"{folder}/{sample_folder}_{start}")
+                    folder_window_count += 1
+
+            total_windows += folder_window_count
+            self._log(f"✅ 目录[{folder_idx}]: {folder} 生成窗口数: {folder_window_count}")
+
+        self._log(f"📊 总样本数: {total_windows} 个窗口")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        sample_path, start_idx = self.samples[idx]
+        folder = sample_path.split(os.sep)[-2]
+
+        # 如果你愿意缓存完整数据，可以缓存 window，但目前按原样实时加载
+        full_data = self._load_full_data(sample_path)
+        window = full_data[start_idx:start_idx + self.seq_len]
+
+        data_tensor = torch.tensor(window, dtype=torch.float)
+        label_tensor = torch.tensor(self.labels[folder], dtype=torch.float)
+        name = self.names[idx]
+        return {
+            "data": data_tensor,     # [seq_len, 21]
+            "label": label_tensor,   # [20]
+            "name": name
+        }

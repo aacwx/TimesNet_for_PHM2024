@@ -1,7 +1,7 @@
 import torch
 
 from data_provider.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_M4, PSMSegLoader, \
-    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader
+    MSLSegLoader, SMAPSegLoader, SMDSegLoader, SWATSegLoader, UEAloader,Dataset_PHM
 from data_provider.uea import collate_fn
 from torch.utils.data import DataLoader
 
@@ -17,8 +17,8 @@ data_dict = {
     'SMAP': SMAPSegLoader,
     'SMD': SMDSegLoader,
     'SWAT': SWATSegLoader,
-    'UEA': UEAloader
-    #'phm': PHMDataset
+    'UEA': UEAloader,
+    'phm': Dataset_PHM
 }
 
 
@@ -57,9 +57,9 @@ def data_provider(args, flag):
             )
 
             def collate_phm_fn(batch):
-                data = torch.stack([b["data"] for b in batch], dim=0)  # [B, seq_len, 21]
-                label = torch.stack([b["label"] for b in batch], dim=0)  # [B, 20]
-                name = [b["name"] for b in batch]
+                data = torch.stack([b["data"] for b in batch], dim=0)  # [B, 1024, 21]
+                label = torch.stack([torch.tensor(b["label"], dtype=torch.float32) for b in batch], dim=0)  # [B, 20]
+                name = [b["name"] for b in batch]  # 字符串列表
                 return {"data": data, "label": label, "name": name}
 
             data_loader = DataLoader(
