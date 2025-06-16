@@ -25,7 +25,7 @@ class Exp_Classification(Exp_Basic):
         self.args.pred_len = 0
         #self.args.enc_in = train_data.feature_df.shape[1]
         self.args.enc_in = train_data.enc_in
-        self.args.num_class = len(train_data.class_names)
+        self.args.num_class = len(train_data[0]["label"])
         # model init
         model = self.model_dict[self.args.model].Model(self.args).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
@@ -101,7 +101,11 @@ class Exp_Classification(Exp_Basic):
             self.model.train()
             epoch_time = time.time()
 
-            for i, (batch_x, label, padding_mask) in enumerate(train_loader):
+            #for i, (batch_x, label, padding_mask) in enumerate(train_loader):
+            for i, batch in enumerate(train_loader):
+                batch_x = batch["data"].float().to(self.device)
+                label = batch["label"].float().to(self.device)
+                padding_mask = batch["padding_mask"].float().to(self.device)
                 iter_count += 1
                 model_optim.zero_grad()
 
@@ -110,7 +114,9 @@ class Exp_Classification(Exp_Basic):
                 label = label.to(self.device)
 
                 outputs = self.model(batch_x, padding_mask, None, None)
-                loss = criterion(outputs, label.long().squeeze(-1))
+                #loss = criterion(outputs, label.long().squeeze(-1))
+                criterion = nn.BCEWithLogitsLoss()
+                loss = criterion(outputs, label)
                 train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:

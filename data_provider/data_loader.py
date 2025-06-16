@@ -752,7 +752,7 @@ class UEAloader(Dataset):
 
 
 class Dataset_PHM(Dataset):
-    def __init__(self, root_dir, seq_len=1024, stride=256, verbose=True, cache_dir='./cache'):
+    def __init__(self, root_dir, seq_len=512, stride=256, verbose=True, cache_dir='./cache'):
         super().__init__()
         self.root_dir = root_dir
         self.seq_len = seq_len
@@ -777,6 +777,7 @@ class Dataset_PHM(Dataset):
             self.samples = []
             self.labels = {}
             self.names = []
+            self.class_names = []
             self._index_dataset()
 
             torch.save({
@@ -792,7 +793,7 @@ class Dataset_PHM(Dataset):
             print(message)
 
     def _parse_label_from_dirname(self, dirname):
-        label = [0] * 20  # M:5, G:9, LA:4, RA:2
+        label = [0] * 20  # M:5, G:9, LA:5, RA:1
         components = dirname.split("_")
         for comp in components:
             sub_comps = comp.split("+")
@@ -809,31 +810,39 @@ class Dataset_PHM(Dataset):
                         idx = int(match.group(1))
                         label[5 + 9 + idx] = 1
                 elif sub.startswith("RA"):
+                    # RA只有RA0，映射到label[19]
                     match = re.match(r"RA(\d+)", sub)
-                    if match:
-                        idx = int(match.group(1))
-                        label[5 + 9 + 4 + idx] = 1
+                    if match and int(match.group(1)) == 0:
+                        label[5 + 9 + 5] = 1  # 即label[19]
                 else:
                     raise ValueError(f"Invalid component in folder name: {sub}")
-        self.class_names = [str(i) for i in sorted(set(label))]
         return label
 
     def _load_full_data(self, sample_path):
         data_list = []
+        min_len = float('inf')
         for file_name in ['data_motor.csv', 'data_gearbox.csv',
                           'data_leftaxlebox.csv', 'data_rightaxlebox.csv']:
             file_path = os.path.join(sample_path, file_name)
             df = pd.read_csv(file_path)
+            min_len = min(min_len, df.values.shape[0])
             data_list.append(df.values)
-        return np.concatenate(data_list, axis=1)  # shape: [T, 21]
+        # 截断到相同长度
+        data_list = [data[:min_len] for data in data_list]
+        full_array = np.concatenate(data_list, axis=1).astype(np.float32)  # 保证类型一致
+        return full_array  # shape: [T, 21]
 
     def _index_dataset(self):
         total_windows = 0
+        self.class_names=[]
         self._log(f"📦 开始索引数据集目录：{self.root_dir}")
         for folder_idx, folder in enumerate(os.listdir(self.root_dir)):
             folder_path = os.path.join(self.root_dir, folder)
             if not os.path.isdir(folder_path):
                 continue
+            # 记录 class_name
+            if folder not in self.class_names:
+                self.class_names.append(folder)
 
             label = self._parse_label_from_dirname(folder)
             self.labels[folder] = label
@@ -875,8 +884,10 @@ class Dataset_PHM(Dataset):
         data_tensor = torch.tensor(window, dtype=torch.float)
         label_tensor = torch.tensor(self.labels[folder], dtype=torch.float)
         name = self.names[idx]
+        padding_mask_tensor = torch.ones(self.seq_len, dtype=torch.bool)  # 无padding，全1
         return {
             "data": data_tensor,     # [seq_len, 21]
             "label": label_tensor,   # [20]
-            "name": name
+            "name": name,
+            "padding_mask": padding_mask_tensor  # [seq_len]
         }

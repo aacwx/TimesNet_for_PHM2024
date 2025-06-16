@@ -60,7 +60,8 @@ def data_provider(args, flag):
                 data = torch.stack([b["data"] for b in batch], dim=0)  # [B, 1024, 21]
                 label = torch.stack([torch.tensor(b["label"], dtype=torch.float32) for b in batch], dim=0)  # [B, 20]
                 name = [b["name"] for b in batch]  # 字符串列表
-                return {"data": data, "label": label, "name": name}
+                padding_mask = torch.stack([b["padding_mask"] for b in batch], dim=0)  # [B, 1024]
+                return {"data": data, "label": label, "name": name, "padding_mask": padding_mask}
 
             data_loader = DataLoader(
                 data_set,
